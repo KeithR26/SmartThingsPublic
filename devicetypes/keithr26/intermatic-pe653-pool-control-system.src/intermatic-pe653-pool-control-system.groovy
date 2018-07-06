@@ -44,6 +44,7 @@
  *									Reorganized UI. Display Air temp, Heater on/off and Clock.
  *									Minor adjustments for Hubitat compatibility.
  *									Remove defaults to fix Android config issues.
+ *	3.01	07/06/2018	KeithR26	Added second Air Temperature. Now displays both Freeze and Solar temps.
 */
 metadata {
 	definition (name: "Intermatic PE653 Pool Control System", author: "KeithR26", namespace:  "KeithR26") {
@@ -374,9 +375,23 @@ metadata {
 				    	[value: 110, color: "#bc2323"]
 					]
 		}
-		valueTile("airTempTile", "device.airTemp", width: 2, height: 1, inactiveLabel: true ) {
+		valueTile("airTempFTile", "device.airTempFreeze", width: 1, height: 1, inactiveLabel: true ) {
 			state "airTemp", label:'${currentValue}°',
 					backgroundColors:[
+						[value: 0,  color: "#ffffff"],
+						[value: 32, color: "#153591"],
+					    [value: 54, color: "#1e9cbb"],
+				    	[value: 64, color: "#90d2a7"],
+				    	[value: 74, color: "#44b621"],
+				    	[value: 90, color: "#f1d801"],
+				    	[value: 98, color: "#d04e00"],
+				    	[value: 110, color: "#bc2323"]
+					]
+		}
+		valueTile("airTempSTile", "device.airTempSolar", width: 1, height: 1, inactiveLabel: true ) {
+			state "airTemp", label:'${currentValue}°',
+					backgroundColors:[
+						[value: 0,  color: "#ffffff"],
 						[value: 32, color: "#153591"],
 					    [value: 54, color: "#1e9cbb"],
 				    	[value: 64, color: "#90d2a7"],
@@ -387,7 +402,7 @@ metadata {
 					]
 		}
 		valueTile("airTempLabel", "device.airTempLabel", width: 1, height: 1, inactiveLabel: false, decoration: "flat") {
-			state "airTemp", label:'  AIR:', backgroundColor:"#ffffff"
+			state "airTemp", label:'  AIR: Frz/Sol', backgroundColor:"#ffffff"
 		}
         controlTile("poolSliderControl", "device.poolSetpoint", "slider", width: 2, height: 1, inactiveLabel: false, range:"(40..104)") {
 			state "PoolSetpoint", action:"quickSetPool", backgroundColor:"#d04e00"
@@ -549,7 +564,7 @@ metadata {
             "swM3", "M3Name",
 			"heaterLabel", "heaterTile",
             "swM4", "M4Name",
-			"airTempLabel", "airTempTile",
+			"airTempLabel", "airTempFTile", "airTempSTile",
 			"refresh",
             "clock",
 //            "blank1",
@@ -561,7 +576,7 @@ metadata {
 // Constants for PE653 configuration parameter locations
 def getDELAY () {ZWdelay}								// How long to delay between commands to device (configured)
 def getMIN_DELAY () {"800"}								// Minimum delay between commands to device (configured)
-def getVERSION () {"Ver 3.00"}							// Keep track of handler version
+def getVERSION () {"Ver 3.01"}							// Keep track of handler version
 def getPOOL_SPA_SCHED_PARAM () { 21 }					// Pool/Spa mode Schedule #3 - 0x15
 def getPOOL_SPA_CHAN () { 39 }							// Pool/Spa channel - 0x27
 def getPOOL_SPA_EP () { 6 }								// Pool/Spa endpoint - 6
@@ -783,7 +798,8 @@ def zwaveEventManufacturerProprietary(byte [] payload, payloadStr) {
 	def getCLOCK_MINUTE_84 () { 16 }			// Clock Minute
 	def getCLOCK_HOUR_84 () { 15 }				// Clock Hour
 	def getWATER_TEMP_84 () { 12 }				// Water Temperature
-	def getAIR_TEMP_84 () { 13 }				// Air Temperature
+	def getAIR_TEMP_FREEZE_84 () { 13 }			// Air Temperature for Freeze sensing
+	def getAIR_TEMP_SOLAR_84 () { 14 }			// Air Temperature for Solar control
 	def getSWITCHES_84 () { 8 }					// Bit mask of 5 switches. SW1 = 01X, SW5 = 10X
 	def getPOOL_SPA_MODE_84 () { 11 }			// Pool/Spa mode. 01x Pool mode, 00x Spa mode
 	def getVSP_SPEED_84 () { 20 }				// VSP Speed bit mask. 01x = VSP1, 08x = VSP4
@@ -824,8 +840,11 @@ def process84Event(byte [] payload) {
 //	Update Water Temperature
     rslt << createEvent(name: "temperature", value: payload[WATER_TEMP_84], unit: "F", displayed: false)
 
-//	Update Air Temperature
-    rslt << createEvent(name: "airTemp", value: "${payload[AIR_TEMP_84]}", unit: "F", displayed: false)
+//	Update Freeze Air Temperature
+    rslt << createEvent(name: "airTempFreeze", value: "${payload[AIR_TEMP_FREEZE_84]}", unit: "F", displayed: false)
+
+//	Update Solar Air Temperature
+    rslt << createEvent(name: "airTempSolar", value: "${payload[AIR_TEMP_SOLAR_84]}", unit: "F", displayed: false)
 
 //	Update Clock
     def time1 = "${String.format("%02d",payload[CLOCK_HOUR_84])}:${String.format("%02d",payload[CLOCK_MINUTE_84])}"
