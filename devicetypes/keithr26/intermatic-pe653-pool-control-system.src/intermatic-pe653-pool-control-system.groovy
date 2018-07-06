@@ -39,7 +39,11 @@
  *	2.04	05/07/2017	KeithR26	Allow negative temperature offsets. Limit offets to +/- 5 (max supported by PE653)
  *	2.05	05/13/2017	KeithR26	Debug version for Android. Never committed to master
  *	2.06	05/13/2017	KeithR26	Update to fix Temperature display on Android
- *	3.00	05/06/2018	KeithR26	Change to "Composite" DTH since ST deprecated the Multi-channel SmartApp
+ *	3.00	07/05/2018	KeithR26	Change to "Composite" DTH since ST deprecated the Multi-channel SmartApp
+ *									Improves VSP integration. No more schedules.
+ *									Reorganized UI. Display Air temp, Heater on/off and Clock.
+ *									Minor adjustments for Hubitat compatibility.
+ *									Remove defaults to fix Android config issues.
 */
 metadata {
 	definition (name: "Intermatic PE653 Pool Control System", author: "KeithR26", namespace:  "KeithR26") {
