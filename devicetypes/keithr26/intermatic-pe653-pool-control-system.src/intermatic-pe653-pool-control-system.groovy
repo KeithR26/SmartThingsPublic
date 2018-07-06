@@ -37,9 +37,9 @@
  *									Implement simple "Macros"
  *	2.03	05/01/2017	KeithR26	Refresh water temp when UI temp is tapped
  *	2.04	05/07/2017	KeithR26	Allow negative temperature offsets. Limit offets to +/- 5 (max supported by PE653)
- *  2.05	05/13/2017  KeithR26	Debug version for Android. Never committed to master
- *  2.06    05/13/2017  KeithR26	Update to fix Temperature display on Android
- *  3.00	05/06/2018	KeithR26	Change to "Composite" DTH since ST deprecated the Multi-channel SmartApp
+ *	2.05	05/13/2017	KeithR26	Debug version for Android. Never committed to master
+ *	2.06	05/13/2017	KeithR26	Update to fix Temperature display on Android
+ *	3.00	05/06/2018	KeithR26	Change to "Composite" DTH since ST deprecated the Multi-channel SmartApp
 */
 metadata {
 	definition (name: "Intermatic PE653 Pool Control System", author: "KeithR26", namespace:  "KeithR26") {
