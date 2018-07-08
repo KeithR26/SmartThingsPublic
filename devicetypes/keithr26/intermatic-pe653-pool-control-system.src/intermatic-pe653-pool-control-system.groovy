@@ -45,6 +45,7 @@
  *									Minor adjustments for Hubitat compatibility.
  *									Remove defaults to fix Android config issues.
  *	3.01	07/06/2018	KeithR26	Added second Air Temperature. Now displays both Freeze and Solar temps.
+ *	3.02	07/07/2018	KeithR26	Avoid sending events and warnings if no VSP
 */
 metadata {
 	definition (name: "Intermatic PE653 Pool Control System", author: "KeithR26", namespace:  "KeithR26") {
@@ -576,7 +577,7 @@ metadata {
 // Constants for PE653 configuration parameter locations
 def getDELAY () {ZWdelay}								// How long to delay between commands to device (configured)
 def getMIN_DELAY () {"800"}								// Minimum delay between commands to device (configured)
-def getVERSION () {"Ver 3.01"}							// Keep track of handler version
+def getVERSION () {"Ver 3.02"}							// Keep track of handler version
 def getPOOL_SPA_SCHED_PARAM () { 21 }					// Pool/Spa mode Schedule #3 - 0x15
 def getPOOL_SPA_CHAN () { 39 }							// Pool/Spa channel - 0x27
 def getPOOL_SPA_EP () { 6 }								// Pool/Spa endpoint - 6
@@ -823,19 +824,24 @@ def process84Event(byte [] payload) {
 		rslt.addAll(createMultipleEvents(sw.key.toInteger(), val, (val == 0) ? "off": "on"))
     }
 
-	for (vsp in ['1':1, '2':2, '3':4, '4':8]) {
-    	if (payload[VSP_SPEED_84] & vsp.value) {
-            val = 0xFF
-        } else {
-            val = 0
+//	Set VSP indicators if enabled
+	if (VSP_ENABLED) {
+        for (vsp in ['1':1, '2':2, '3':4, '4':8]) {
+            if (payload[VSP_SPEED_84] & vsp.value) {
+                val = 0xFF
+            } else {
+                val = 0
+            }
+            ch = getVSP_EP(vsp.key.toInteger())
+            rslt.addAll(createMultipleEvents(ch, val, (val == 0) ? "off": "on"))
         }
-        ch = getVSP_EP(vsp.key.toInteger())
-		rslt.addAll(createMultipleEvents(ch, val, (val == 0) ? "off": "on"))
     }
 
 //	Set Pool/Spa mode indicator
-	val = ((payload[POOL_SPA_MODE_84] & 0x01) == 0) ? 0xFF : 0
-	rslt.addAll(createMultipleEvents(POOL_SPA_EP, val, (val == 0) ? "off": "on"))
+	if (POOL_SPA_COMBO) {
+        val = ((payload[POOL_SPA_MODE_84] & 0x01) == 0) ? 0xFF : 0
+        rslt.addAll(createMultipleEvents(POOL_SPA_EP, val, (val == 0) ? "off": "on"))
+    }
 
 //	Update Water Temperature
     rslt << createEvent(name: "temperature", value: payload[WATER_TEMP_84], unit: "F", displayed: false)
@@ -1053,7 +1059,7 @@ private List createMultipleEvents (Integer endpoint, Integer externalParm, Strin
 	        rslt << "Note:Event: \"${myParm}\" to child: ${dni}:${devObj}"
         }
     } else {
-    	log.warn "CME: CANT'T FIND CHILD DEVICE: ${dni}:$swName"
+    	log.warn "CME: CAN'T FIND CHILD DEVICE: ${dni}:$swName"
     }
 
     def sw = getSWITCH_NAME(endpoint)
