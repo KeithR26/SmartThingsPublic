@@ -547,7 +547,7 @@ metadata {
 // Constants for PE653 configuration parameter locations
 def getDELAY () {ZWdelay}								// How long to delay between commands to device (configured)
 def getMIN_DELAY () {"800"}								// Minimum delay between commands to device (configured)
-def getVERSION () {"Ver 3.02"}							// Keep track of handler version
+def getVERSION () {"Ver 3.03"}							// Keep track of handler version
 def getPOOL_SPA_SCHED_PARAM () { 21 }					// Pool/Spa mode Schedule #3 - 0x15
 def getPOOL_SPA_CHAN () { 39 }							// Pool/Spa channel - 0x27
 def getPOOL_SPA_EP () { 6 }								// Pool/Spa endpoint - 6
