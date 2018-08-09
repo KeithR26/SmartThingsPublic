@@ -47,6 +47,13 @@
  *	3.01	07/06/2018	KeithR26	Added second Air Temperature. Now displays both Freeze and Solar temps.
  *	3.02	07/07/2018	KeithR26	Avoid sending events and warnings if no VSP
  *	3.03	07/15/2018	KeithR26	More minor adjustments to improve Hubitat compatibility
+ *	3.04	07/15/2018	KeithR26	Added setSchedule, resetSchedule, getSchedule, and setVSPSpeeds commands
+ *									Added Schedule events
+ *			07/22/2018	KeithR26	Due to different Intermatic firmware sub-versions of v3.4, alternate Setpoint "scale" if SetPointSet is ignored ("learn")
+ *									Fix negative air and solar temperature display
+ *			08/09/2018	KeithR26	Fixes to getSchedule.
+ *									Fix QuickGetWaterTemp
+ *									Fix update of "Set Mode" labels on the UI
 */
 metadata {
 	definition (name: "Intermatic PE653 Pool Control System", author: "KeithR26", namespace:  "KeithR26") {
@@ -59,6 +66,7 @@ metadata {
 		capability "Sensor"
 		capability "Zw Multichannel"
         capability "Thermostat"
+//		capability "Update"
         
         attribute "operationMode", "string"
         attribute "firemanTimeout", "string"
@@ -68,13 +76,11 @@ metadata {
         attribute "poolSetpoint", "string"
         attribute "spaSetpoint", "string"
         attribute "poolSpaMode", "string"
-        attribute "pumpSpeed", "string"
         attribute "lightColor", "string"
         attribute "lightCircuits", "string"
 		attribute "ccVersions", "string"
 		attribute "VersionInfo", "string"
 		attribute "ManufacturerInfo", "string"
-		attribute "groups", "string"
 		attribute "debugLevel", "string"
 		attribute "switch1", "string"
 		attribute "switch2", "string"
@@ -85,11 +91,15 @@ metadata {
 		attribute "swVSP2", "string"
 		attribute "swVSP3", "string"
 		attribute "swVSP4", "string"
+		attribute "schedules", "JSON_OBJECT"
+        attribute "lastScheduleChg", "string"
+        attribute "VSPSpeeds", "string"
 
         command "poll"
         command "quickSetPool", ["number"]
         command "quickSetSpa", ["number"]
 		command "quickGetWaterTemp"
+        command "quickGetTestCmds"
 		command "setPoolMode"
 		command "setSpaMode"
 		command "togglePoolSpaMode"
@@ -118,7 +128,11 @@ metadata {
         command "setLightColor", ["number"]
         command "setColor"
         command "setClock"
-        command "updated"
+        command "getSchedule", ["number","number"]
+        command "setSchedule", ["number","number","number","number","number","number"]
+        command "resetSchedule", ["number","number"]
+        command "setVSPSpeeds"
+//        command "updated"
         
 		fingerprint deviceId: "0x1001", inClusters: "0x91,0x73,0x72,0x86,0x81,0x60,0x70,0x85,0x25,0x27,0x43,0x31", outClusters: "0x82"
 	}
@@ -387,7 +401,7 @@ metadata {
 					]
 		}
 		valueTile("airTempLabel", "device.airTempLabel", width: 1, height: 1, inactiveLabel: false, decoration: "flat") {
-			state "airTemp", label:'  AIR: Frz/Sol', backgroundColor:"#ffffff"
+			state "airTemp", label:'  AIR: Frz/Sol', action:"quickGetTestCmds", backgroundColor:"#ffffff"
 		}
         controlTile("poolSliderControl", "device.poolSetpoint", "slider", width: 2, height: 1, inactiveLabel: false, range:"(39..104)") {
 			state "PoolSetpoint", action:"quickSetPool", backgroundColor:"#d04e00"
@@ -547,11 +561,14 @@ metadata {
 // Constants for PE653 configuration parameter locations
 def getDELAY () {ZWdelay}								// How long to delay between commands to device (configured)
 def getMIN_DELAY () {"800"}								// Minimum delay between commands to device (configured)
-def getVERSION () {"Ver 3.03"}							// Keep track of handler version
-def getPOOL_SPA_SCHED_PARAM () { 21 }					// Pool/Spa mode Schedule #3 - 0x15
+def getVERSION () {"Ver 3.04"}							// Keep track of handler version
+def getSWITCH_SCHED_PARAM (int sw, int sch) { (4 + (sw-1)*3 + (sch-1)) }	// Configuration schedule for switch 1-5
+def getVSP_RPM_SCHED_PARAM (int sp) { (32 + (sp-1))}	// Configuration schedule for VSP RPM Speeds 1-4
+def getVSP_RPMMAX_SCHED_PARAM () { (49) }				// VSP RPM Max speed Schedule 0x31
+def getPOOL_SPA_SCHED_PARAM (int sch) { 20 + (sch-1) }	// Pool/Spa mode Schedule 1-3 - 0x14
+def getVSP_SCHED_PARAM (int sp, int sch) { (36 + (sp-1)*3 + (sch-1)) }		// VSP Speed 1-4 Schedule 1-3 - 0x24
 def getPOOL_SPA_CHAN () { 39 }							// Pool/Spa channel - 0x27
 def getPOOL_SPA_EP () { 6 }								// Pool/Spa endpoint - 6
-def getVSP_SCHED_NO (int spd) { (35 + (spd * 3)) }		// VSP Speed 1 Schedule #3 - 0x26
 def getVSP_SPEED (int sched) { ((sched - 35) / 3) }		// Convert from sched to speed
 def getVSP_CHAN_NO (int spd) { (16 + (spd - 1)) }		// VSP Speed 1 Channel  - 0x10 - 0x13
 def getVSP_EP (int spd) { (6 + spd) }					// VSP Endpoint 7 - 10
@@ -561,6 +578,18 @@ def getPOOL_SPA_COMBO () { (poolSpa1 == "2") ? 1 : 0 }	// True if both Pool and 
 def getSWITCH_NAME (int instance) {
 	def swNames = ["switch1","switch2","switch3","switch4","switch5","poolSpaMode","swVSP1","swVSP2","swVSP3","swVSP4"]
     return swNames[instance - 1]
+}
+def getSCHED_PARAM (int ep, int sch) {
+	if (ep >= 1 && ep <= 5)  {return getSWITCH_SCHED_PARAM(ep, sch)}
+	if (ep == 6)             {return getPOOL_SPA_SCHED_PARAM(sch)}
+	if (ep >= 7 && ep <= 10) {return getVSP_SCHED_PARAM(ep-6, sch)}
+    return 0
+}
+def getEP_FROM_SCHED_PARM (int paramNum) {
+	if (paramNum >= getSCHED_PARAM (1, 1) && paramNum <= getSCHED_PARAM (5, 3))   {return ((paramNum - getSCHED_PARAM(1,1)).intdiv(3) + 1)}
+	if (paramNum >= getSCHED_PARAM (6, 1) && paramNum <= getSCHED_PARAM (6, 3))   {return 6}
+	if (paramNum >= getSCHED_PARAM (7, 1) && paramNum <= getSCHED_PARAM (10, 3))  {return ((paramNum - getSCHED_PARAM(7,1)).intdiv(3) + 1 + 6)}
+    return 0
 }
 // Return the list supported command classes by PE653. The following are the versions for firmware v3.4
 // ccVersions: {"20":1,"25":1,"27":1,"31":1,"43":1,"60":2,"70":1,"72":1,"73":1,"81":1,"85":1,"86":1,"91":1} 
@@ -585,56 +614,62 @@ def getSupportedCmdClasses () {[
 def parse(String description) {
 	def result = null
     def command = null
+    def cmd = null
+    def payloadStr = ""
     byte[] payload = []
 	if (description.startsWith("Err")) {
         log.warn "Error in Parse"
 	    result = createEvent(descriptionText:description, isStateChange:true)
 	} else {
-		try {
+        try {
             def command1 = description.split('command:')[1]
             command = command1.split(',')[0]
-            def payloadStr = description.split('payload:')[1]
-//			log.debug "command: ${command}   payloadStr: ${payloadStr}"
-            if (command.contains("9100")) {
-				payload = payloadStr.replace(" ","").decodeHex()
-                if (debugLevel > "0") {
-//                    log.debug(">>>>> unParsed cmd - description:$description ")
-                }
-				result = zwaveEventManufacturerProprietary(payload, payloadStr)
-			} else {
-//				def cmd = zwave.parse(description, [0x20: 1, 0x25:1, 0x27:1, 0x31:1, 0x43:1, 0x60:3, 0x70:2, 0x72:1, 0x81:1, 0x85:2, 0x86: 1, 0x73:1, 0x91:1])
-                def cmd = zwave.parse(description, [0x20: 1, 0x25:1, 0x27:1, 0x31:1, 0x43:1, 0x60:1, 0x70:2, 0x72:1, 0x81:1, 0x85:2, 0x86: 1, 0x73:1, 0x91:1])
-                if (cmd) {
-                    if (debugLevel > "0") {
-                        log.debug(">>>>> ${cmd} - description:$description ")
-                    }
-                    result = zwaveEvent(cmd)
-                } else {
-                    log.warn("----- Parse() parsed to NULL:  description:$description")
-                    return null
-                }
+            payloadStr = description.split('payload:')[1]
+            } catch (e) {
+                log.warn("..... Exception in Parse() ${cmd} - description:${description} exceptioon ${e}")
             }
-        } catch (e) {
-			log.warn("..... Exception in Parse() ${cmd} - description:${description} exceptioon ${e}")
+        //			log.debug "command: ${command}   payloadStr: ${payloadStr}"
+        if (command.contains("9100")) {
+            payload = payloadStr.replace(" ","").decodeHex()
+            if (debugLevel > "0") {
+                //                    log.debug(">>>>> unParsed cmd - description:$description ")
+            }
+            result = zwaveEventManufacturerProprietary(payload, payloadStr)
+        } else {
+            try {
+                //	cmd = zwave.parse(description, [0x20: 1, 0x25:1, 0x27:1, 0x31:1, 0x43:1, 0x60:3, 0x70:2, 0x72:1, 0x81:1, 0x85:2, 0x86: 1, 0x73:1, 0x91:1])
+                cmd = zwave.parse(description, [0x20: 1, 0x25:1, 0x27:1, 0x31:1, 0x43:1, 0x60:1, 0x70:2, 0x72:1, 0x81:1, 0x85:2, 0x86: 1, 0x73:1, 0x91:1])
+            } catch (e) {
+                log.warn("..... Exception in zwave.parse() ${cmd} - description:${description} exceptioon ${e}")
+            }
+            if (cmd) {
+                if (debugLevel > "0") {
+                    log.debug(">>>>> ${cmd} - description:$description ")
+                }
+                result = zwaveEvent(cmd)
+            } else {
+                log.warn("----- Parse() parsed to NULL:  description:$description")
+                return null
+            }
         }
 	}
 	delayResponseLog(result)
 }
 
 private List setPoolSetpointInternal(Double degrees) {
-    if (debugLevel > "0") {
-		log.debug "setPoolSetpointInternal degrees=${degrees}"
-    }
 //	Z-Wave standard values for thermostatSetpointSet
 //	precision:		0=no decimal digits, 1=1 decimal digit, 2=2 decimal digits
 //	scale:			0=Celsius, 1=Farhenheit
 //	size:			1=8 bit, 2=16 bit, 4=32 bit
 //	setpointType:	1=Heating (pool), 7=Furnace (spa)
 	def cmds = []
-	def deviceScale = state.scale ?: 1
+	def deviceScale = state.scale != null ? state.scale : 1
 	def deviceScaleString = deviceScale == 2 ? "C" : "F"
     def locationScale = getTemperatureScale()
 	def p = (state.precision == null) ? 1 : state.precision
+    if (debugLevel > "0") {
+		log.debug "setPoolSetpointInternal degrees=${degrees} incoming state.scale=${state.scale}  deviceScale=${deviceScale}"
+    }
 
     def convertedDegrees
 //    if (locationScale == "C" && deviceScaleString == "F") {
@@ -645,22 +680,27 @@ private List setPoolSetpointInternal(Double degrees) {
    	convertedDegrees = degrees
 //    }
 	p = 0
-    deviceScale = 0			// Cannot send scale = 1 to PE653 or it will ignore the request
+	state.poolSetpointTemp = degrees
+//    log.debug "state = ${state}"
+//    state.each {key, val ->
+// 	   log.debug "state key: $key, value: $val"
+//	}
+//    deviceScale = 0			// Cannot send scale = 1 to v3.4 PE653 or it will ignore the request
+//    deviceScale = deviceScale ? 0 : 1	// Invert deviceScale to be able to test v34.14 firmware
 	cmds << zwave.thermostatSetpointV1.thermostatSetpointSet(setpointType: 1, scale: deviceScale, precision: p, size: 1, scaledValue: convertedDegrees)
 	cmds << zwave.thermostatSetpointV1.thermostatSetpointGet(setpointType: 1)
-//    log.trace "setPoolSetpoint: setpointType: 1  scale: $deviceScale  precision: $p  scaledValue: $convertedDegrees"
 	cmds
 }
 
 private List setSpaSetpointInternal(Double degrees) {
-    if (debugLevel > "0") {
-	    log.debug "setSpaSetpointInternal degrees=${degrees}"
-    }
     def cmds = []
-	def deviceScale = state.scale ?: 1
+	def deviceScale = state.scale != null ? state.scale : 1
 	def deviceScaleString = deviceScale == 2 ? "C" : "F"
     def locationScale = getTemperatureScale()
 	def p = (state.precision == null) ? 1 : state.precision
+    if (debugLevel > "0") {
+	    log.debug "setSpaSetpointInternal degrees=${degrees} incoming state.scale=${state.scale}  deviceScale=${deviceScale}"
+    }
 
     def convertedDegrees
 //    if (locationScale == "C" && deviceScaleString == "F") {
@@ -671,8 +711,9 @@ private List setSpaSetpointInternal(Double degrees) {
  	convertedDegrees = degrees
 //    }
     p = 0
-    deviceScale = 0			// Cannot send scale = 1 to PE653 ver 3.4 or it will ignore the request
-//    log.trace "setSpaSetpoint: setpointType: 7  scale: $deviceScale  precision: $p  scaledValue: $convertedDegrees"
+	state.spaSetpointTemp = degrees
+//    deviceScale = 0			// Cannot send scale = 1 to PE653 ver 3.4 or it will ignore the request
+//    deviceScale = deviceScale ? 0 : 1	// Invert deviceScale to be able to test v34.14 firmware
 	cmds << zwave.thermostatSetpointV1.thermostatSetpointSet(setpointType: 7, scale: deviceScale, precision: p, size: 1, scaledValue: convertedDegrees)
 	cmds << zwave.thermostatSetpointV1.thermostatSetpointGet(setpointType: 7)
     cmds
@@ -688,7 +729,7 @@ private List getWaterTemp() {
 
 def zwaveEvent(physicalgraph.zwave.commands.versionv1.VersionReport cmd) {
 	state.VersionInfo = "Versions: Firmware v${cmd.applicationVersion}.${cmd.applicationSubVersion}   DTH: ${VERSION}   zWaveLibraryType: ${cmd.zWaveLibraryType}    zWaveProtocol: v${cmd.zWaveProtocolVersion}.${cmd.zWaveProtocolSubVersion}"
-	createEvent(name: "VersionInfo", value: state.VersionInfo, displayed: false, descriptionText: state.VersionInfo)
+	createEvent(name: "VersionInfo", value: state.VersionInfo, displayed: true, descriptionText: state.VersionInfo)
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.versionv1.VersionCommandClassReport cmd) {
@@ -704,8 +745,7 @@ def zwaveEvent(physicalgraph.zwave.commands.versionv1.VersionCommandClassReport 
 def zwaveEvent(physicalgraph.zwave.commands.clockv1.ClockReport cmd) {
 	def time1 = ""
     time1 = "${String.format("%02d",cmd.hour)}:${String.format("%02d",cmd.minute)}"
-	log.debug "from PE653: ${time1}"    
-//	state.VersionInfo = "ClockReport: ${time1}"
+	log.debug "ClockReport: from PE653=${time1}"    
 	createEvent(name: "clock", value: "${time1}", displayed: false, descriptionText: "PE653 Clock: ${time1}")
 }
 
@@ -731,16 +771,19 @@ def zwaveEventManufacturerProprietary(byte [] payload, payloadStr) {
     if (payload[1] == 0x40 && payload[4] == -124) {
     	respType = 84
         oldResp = state.manProp1
+        if (oldResp == null) {oldResp = payload}
         state.manProp1 = payload
         rslt = process84Event(payload)
     } else if (payload[1] == 0x40 && payload[4] == -121) {
     	respType = 87
         oldResp = state.manProp2
+        if (oldResp == null) {oldResp = payload}
         state.manProp2 = payload
         rslt = process87Event(payload)
     } else if (payload[1] == 0x41) {
     	respType = 41
         oldResp = state.manProp3
+        if (oldResp == null) {oldResp = payload}
         state.manProp3 = payload
 //        rslt = process41Event(payload)
      } else {
@@ -788,6 +831,7 @@ def process84Event(byte [] payload) {
 	def str = ""
     def val = 0
 	def ch = 0
+    Integer temp
 
 	def swMap = ['1':1, '2':2, '3':4, '4':8, '5':16]
 	for (sw in swMap) {
@@ -819,18 +863,20 @@ def process84Event(byte [] payload) {
     }
 
 //	Update Water Temperature
-    rslt << createEvent(name: "temperature", value: payload[WATER_TEMP_84], unit: "F", displayed: false)
+	temp = payload[WATER_TEMP_84] >= 0 ? payload[WATER_TEMP_84] : payload[WATER_TEMP_84] + 255
+    rslt << createEvent(name: "temperature", value: temp, unit: "F", displayed: false)
 
 //	Update Freeze Air Temperature
-    rslt << createEvent(name: "airTempFreeze", value: "${payload[AIR_TEMP_FREEZE_84]}", unit: "F", displayed: false)
+//	payload[AIR_TEMP_FREEZE_84] = -127  // test for negative
+	temp = payload[AIR_TEMP_FREEZE_84] >= 0 ? payload[AIR_TEMP_FREEZE_84] : payload[AIR_TEMP_FREEZE_84] + 255
+    rslt << createEvent(name: "airTempFreeze", value: temp, unit: "F", displayed: false)
 
 //	Update Solar Air Temperature
-    rslt << createEvent(name: "airTempSolar", value: "${payload[AIR_TEMP_SOLAR_84]}", unit: "F", displayed: false)
+	temp = payload[AIR_TEMP_SOLAR_84] >= 0 ? payload[AIR_TEMP_SOLAR_84] : payload[AIR_TEMP_SOLAR_84] + 255
+    rslt << createEvent(name: "airTempSolar", value: temp, unit: "F", displayed: false)
 
 //	Update Clock
     def time1 = "${String.format("%02d",payload[CLOCK_HOUR_84])}:${String.format("%02d",payload[CLOCK_MINUTE_84])}"
-//	log.debug "from PE653: ${time1}"
-//	state.VersionInfo = "ClockReport: ${time1}"
 	rslt << createEvent(name: "clock", value: "${time1}", displayed: false, descriptionText: "PE653 Clock: ${time1}")
 
 	rslt
@@ -852,10 +898,10 @@ def process87Event(byte [] payload) {
 
 // ManufacturerSpecificReport(manufacturerId: 5, manufacturerName: Intermatic, productId: 1619, productTypeId: 20549) 
 def zwaveEvent(physicalgraph.zwave.commands.manufacturerspecificv1.ManufacturerSpecificReport cmd) {
+	state.ManufacturerInfo = "ManufacturerInfo:  manufacturerId: $cmd.manufacturerId, manufacturerName: $cmd.manufacturerName, productId: $cmd.productId, productTypeId: $cmd.productTypeId"
     if (debugLevel > "0") {
-		log.debug "ManufacturerSpecificReport !!!"
+		log.debug "ManufacturerSpecificReport:  ${state.ManufacturerInfo}"
     }
-	state.ManufacturerInfo = "ManufacturerInfo:  manufacturerId: $manufacturerId, manufacturerName: $manufacturerName, productId: $productId, productTypeId: $productTypeId"
 	createEvent(name: "ManufacturerInfo", value: state.ManufacturerInfo, displayed: true, descriptionText: state.ManufacturerInfo)
 }
 
@@ -865,6 +911,9 @@ def zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport 
     def myValue = ""
     def externalValue = ""
     def paramNum = cmd.parameterNumber
+    int ep = getEP_FROM_SCHED_PARM(paramNum)
+	int sch = paramNum - getSCHED_PARAM(ep,1) +1
+//	log.debug "paramNum=$paramNum   getSCHED_PARAM($ep,1)=${getSCHED_PARAM(ep,1)}   sch=${sch}"
 	map.value = cmd.configurationValue[0]
     map.name = ""
 	map.displayed = true
@@ -887,8 +936,36 @@ def zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport 
 //			cmds << createEvent(map)
 			break;
 		default:
-            log.warn "..... ConfigurationReport  - UNKNOWN parameter=${paramNum}"
+//			log.warn "..... ConfigurationReport  - UNKNOWN parameter=${paramNum}"
 			break;
+	}
+
+	// If this configuration report corresponds to one of the schedules, record the current setting and create events
+    if (ep) {
+        def lst = [ep, sch]
+        def schLst
+//        def schLst2
+//        def schLst3
+        for (def i=0;i<cmd.size;i++) {
+            lst << cmd.configurationValue[i]
+        }
+
+        if (state.schedules == null) {state.schedules = []}
+//        schLst3 = state.schedules
+//        schLst2 = schLst3[ep]
+        schLst = state.schedules[ep]
+//        schLst = schLst2
+//        if (state.schedules[ep] == null) {state.schedules[ep]=[]}
+        if (schLst == null) {schLst =[];state.schedules[ep]=schLst }
+        if (debugLevel > "0") {
+			log.debug "ConfigurationReport for Schedule: ep:${ep} sch=${sch} lst=${lst} schLst.old=${schLst} schLst2=$schLst2 schLst3=$schLst3"
+        }
+        schLst[sch] = lst
+//      log.debug "schLst=$schLst  state.schedules=${state.schedules}"
+//		log.debug "state = ${state}"
+
+        cmds << createEvent(name: "schedules", value: util.toJson(state.schedules), isStateChange: true, displayed: true, descriptionText: "Schedule fpr ep=${ep} sch=${sch} updated to: ${lst}")
+        cmds << createEvent(name: "lastScheduleChg", value: ep, isStateChange: true, displayed: true, descriptionText: "Schedule ${ep},${sch} changed")
 	}
 	cmds
 }
@@ -903,23 +980,44 @@ def zwaveEvent(physicalgraph.zwave.commands.sensormultilevelv1.SensorMultilevelR
 
 def zwaveEvent(physicalgraph.zwave.commands.thermostatsetpointv1.ThermostatSetpointReport cmd) {
 	def map = [:]
+    def setpoint
+    double requestedSetpoint = 0
 	map.value = cmd.scaledValue.toString()
-	map.unit = cmd.scale == 1 ? "F" : "C"
+//	map.unit = cmd.scale == 1 ? "F" : "C"
+	map.unit = "F"
 	map.displayed = true
 	switch (cmd.setpointType) {
 		case 1:
 			map.name = "poolSetpoint"
+		    setpoint = state.poolSetpointTemp
 			break;
 		case 7:
 			map.name = "spaSetpoint"
+		    setpoint = state.spaSetpointTemp
 			break;
 		default:
 			return [:]
 	}
+    if (debugLevel > "0") {
+	    log.debug "ThermostatSetpointReport: incoming state.scale=${state.scale} requested state.${map.name}Temp=${setpoint}  reported Setpoint=${cmd.scaledValue}"
+    }
+    if (setpoint != null) {requestedSetpoint = setpoint}
 	// So we can respond with same format
 	state.size = cmd.size
-	state.scale = cmd.scale
 	state.precision = cmd.precision
+//	state.scale = cmd.scale
+    // PE653 ver3.4 has two varients: v34 that requires Celsius scale (0) and a newer (correct) V34.14 that requires Fahrenheit scale (1).
+    // Unfortunately the version report does not distinguish between the two versions.
+    // Regardless of scale, PE653 always expects the actual temperature value to be in Fahrenheit.
+    // If a setpoint Set request is ignored, then flip to the opposite scale in an attempt to adapt to the one this firmware expects.
+    if (cmd.scaledValue != requestedSetpoint) {
+    	def oldScale = state.scale
+    	state.scale = state.scale == 1 ? 0 : 1
+    	log.warn "ThermostatSetpointReport: Requested Setpoint was ignored. Switching from old scale=${oldScale} to new state.scale=${state.scale}"
+	}
+    if (debugLevel > "0") {
+	    log.debug "ThermostatSetpointReport: outgoing state.scale=${state.scale}"
+    }
 	createEvent(map)
 }
 
@@ -961,7 +1059,7 @@ def zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationReport cmd)
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationGroupingsReport cmd) {
-    state.groups = cmd.supportedGroupings
+//    state.groups = cmd.supportedGroupings
     []
 }
 
@@ -1070,19 +1168,19 @@ def List poll() {
 
 private initUILabels() {
 	def val = "off"
-	sendEvent(name: "M1Name", value: (M1Label ? "${M1Label}" : ""), isStateChange: true, displayed: true, descriptionText: "init M1 Label to ${M1Label}")
-	sendEvent(name: "M2Name", value: (M2Label ? "${M2Label}" : ""), isStateChange: true, displayed: true, descriptionText: "init M2 Label to ${M2Label}")
-	sendEvent(name: "M3Name", value: (M3Label ? "${M3Label}" : ""), isStateChange: true, displayed: true, descriptionText: "init M3 Label to ${M3Label}")
-	sendEvent(name: "M4Name", value: (M4Label ? "${M4Label}" : ""), isStateChange: true, displayed: true, descriptionText: "init M4 Label to ${M4Label}")
+	sendEvent(name: "M1Name", value: (M1Label ? "${M1Label}" : ""), isStateChange: true, displayed: false, descriptionText: "init M1 Label to ${M1Label}")
+	sendEvent(name: "M2Name", value: (M2Label ? "${M2Label}" : ""), isStateChange: true, displayed: false, descriptionText: "init M2 Label to ${M2Label}")
+	sendEvent(name: "M3Name", value: (M3Label ? "${M3Label}" : ""), isStateChange: true, displayed: false, descriptionText: "init M3 Label to ${M3Label}")
+	sendEvent(name: "M4Name", value: (M4Label ? "${M4Label}" : ""), isStateChange: true, displayed: false, descriptionText: "init M4 Label to ${M4Label}")
     
 	val = VSP_ENABLED ? "off" : "disabled"
-   	sendEvent(name: "swVSP1", value: val, displayed: true, descriptionText:"")
-   	sendEvent(name: "swVSP2", value: val, displayed: true, descriptionText:"")
-   	sendEvent(name: "swVSP3", value: val, displayed: true, descriptionText:"")
-   	sendEvent(name: "swVSP4", value: val, displayed: true, descriptionText:"")
+   	sendEvent(name: "swVSP1", value: val, displayed: false, descriptionText:"")
+   	sendEvent(name: "swVSP2", value: val, displayed: false, descriptionText:"")
+   	sendEvent(name: "swVSP3", value: val, displayed: false, descriptionText:"")
+   	sendEvent(name: "swVSP4", value: val, displayed: false, descriptionText:"")
 
 	val = POOL_SPA_COMBO ? "off" : "disabled"
-   	sendEvent(name: "poolSpaMode", value: val, displayed: true, descriptionText:"")
+   	sendEvent(name: "poolSpaMode", value: val, displayed: false, descriptionText:"")
 }
 
 // Called only by an explicit push of the "Refresh" button
@@ -1090,8 +1188,8 @@ def List refresh() {
 	log.debug "+++++ refresh()  DTH:${VERSION}  state.Versioninfo=${state.VersionInfo}"
     def cmds = []
     
-	cmds << zwave.thermostatSetpointV1.thermostatSetpointGet(setpointType: 1)
-    cmds << zwave.thermostatSetpointV1.thermostatSetpointGet(setpointType: 7)
+//	cmds << zwave.thermostatSetpointV1.thermostatSetpointGet(setpointType: 1)
+//	cmds << zwave.thermostatSetpointV1.thermostatSetpointGet(setpointType: 7)
 
 	cmds << zwave.versionV1.versionGet()
 	cmds << zwave.manufacturerSpecificV1.manufacturerSpecificGet()
@@ -1113,12 +1211,51 @@ def List refresh() {
 }
 
 def List updated() {
-	log.debug "+++++ updated()    DTH:${VERSION}  state.Versioninfo=${state.VersionInfo}"
-
-	createChildDevices()
+	log.debug "+++++ updated()    DTH:${VERSION}  state.Versioninfo=${state.VersionInfo}  state.ManufacturerInfo=${state.ManufacturerInfo}"
+	def devStr = ""
 	initUILabels()
+	double degrees = 0
+	createChildDevices()
+   	// Clean up old junk state variables
+    state.remove("groups")
+    state.remove("cnfData")
+    state.remove("cnfData2")
+    state.remove("cnfAttemptsLeft")
+    state.remove("cnfGetGoal")
+    state.remove("cnfParallelGets")
+    state.remove("cnfSendParmOne")
+    state.remove("endpoints")
+    state.remove("enabledEndpoints")
+    state.remove("endpointInfo")
+    state.remove("nextParm")
+    state.remove("manufacturer")
+    state.remove("pumpSpeed")
+    state.remove("oldLabel")
+    state.remove("children")
+    // Initialize persistent state variables
     state.lightCircuitsList = getLightCircuits()
-	delayBetweenLog(addRefreshCmds(internalConfigure()))
+   	state.spaSetpointTemp = degrees
+   	state.poolSetpointTemp = degrees
+	if (state.scale == null) {state.scale = 1}
+	if (state.precision == null) {state.precision = 1}
+//	state.each {key, val ->
+//        log.debug "state key: $key, value: $val"
+//    }
+
+    state.schedules = []
+
+	def cmds = internalConfigure()
+//	cmds.addAll(setSchedule(9,1,12,0,12,02) )
+	cmds.addAll(getSchedule(7,1) )
+	cmds = delayBetweenLog(addRefreshCmds(cmds))
+//	log.warn "cmds=$cmds"
+    cmds.each {key ->
+        devStr = devStr.concat("\n<<<<< updated: cmd=$key")
+//		sendHubCommand(key)
+    }
+	sendHubCommand(cmds,0)
+//	log.debug devStr
+    return []
 }
 
 def List configure() {
@@ -1152,7 +1289,6 @@ private List internalConfigure() {
 }
 
 private void createChildDevices() {
-	state.oldLabel = device.label
 	def oldChildren = getChildDevices()
     if (debugLevel > "0") {
 		log.debug("Existing children: ${oldChildren}")
@@ -1247,7 +1383,6 @@ private List getVSPSpeed() {
 		log.debug "+++++ getVSPSpeed()"
     }
     if ( VSP_ENABLED ) {
-        state.pumpSpeed = '0'		// Assume off unless a schedule is returned on
         for (int sp=1;sp<=4;sp++) {
             cmds.addAll(getChanState(getVSP_CHAN_NO(sp)))
         }
@@ -1282,6 +1417,94 @@ private List setVSPSpeedInternal(Integer speed) {
         cmds.addAll(setChanState(getVSP_CHAN_NO(1), 0))
     }
 	cmds
+}
+
+// Send a configuration request
+private List getConfiguration(Integer parmNo) {
+    if (debugLevel > "0") {
+//		log.debug "+++++ getConfiguration()  parmNo=${parmNo}"
+    }
+	def cmds = []
+    cmds << zwave.configurationV2.configurationGet(parameterNumber: parmNo)
+	cmds
+}
+
+
+// Send a configuration command with a variable number of bytes
+private List setConfiguration(Integer parmNo, Integer siz, Integer byte0, Integer byte1, Integer byte2, Integer byte3) {
+    if (debugLevel > "0") {
+//		log.debug "+++++ setConfiguration()  parmNo=${parmNo} size=${siz}  byte0=${byte0} byte1=${byte1}  byte2=${byte2} byte3=${byte3}"
+    }
+	def cmds = []
+    def ints = [byte0,byte1,byte2,byte3]
+    def parmList = []
+    ints.eachWithIndex{ rpm, inx ->
+    	if (inx < siz) {
+	        parmList << rpm
+        }
+    }
+//	log.debug " siz=$siz  parmList=$parmList"
+    cmds << zwave.configurationV2.configurationSet(configurationValue: parmList, size: siz, parameterNumber: parmNo)
+	cmds
+}
+
+
+// Set one schedule based on the schedule number and its start and end time
+List setSchedule(Integer endpoint, Integer schedNo, Integer startHour, Integer startMinute, Integer endHour, Integer endMinute) {
+	def cmds = []
+    def cnfNo = getSCHED_PARAM(endpoint, schedNo)
+    if (debugLevel > "0") {
+		log.debug "+++++ setSchedule()  endpoint=${endpoint} schedNo=${schedNo} cnfNo=${cnfNo} start time=${startHour}:${startMinute}  end time=${endHour}:${endMinute}"
+    }
+    if (cnfNo) {
+        int startTim = startHour * 60 + startMinute
+        int endTim = endHour * 60 + endMinute
+        cmds.addAll(setConfiguration(cnfNo, 4, (startTim % 256), startTim.intdiv(256), (endTim % 256), endTim.intdiv(256)))
+    }
+	delayBetweenLog(cmds)
+}
+
+// Reset one schedule based on the schedule number
+List resetSchedule(Integer endpoint, Integer schedNo) {
+	def cmds = []
+    def cnfNo = getSCHED_PARAM(endpoint, schedNo)
+    if (debugLevel > "0") {
+		log.debug "+++++ resetSchedule()  endpoint=${endpoint} schedNo=${schedNo} cnfNo=${cnfNo}"
+    }
+    if (cnfNo) {
+		cmds.addAll(setConfiguration(getSCHED_PARAM(endpoint, schedNo), 4, 0xFF, 0xFF, 0xFF, 0xFF))
+	}
+	delayBetweenLog(cmds)
+}
+
+// Request a one schedule based on the schedule number
+List getSchedule(Integer endpoint, Integer schedNo) {
+	def cmds = []
+    def cnfNo = getSCHED_PARAM(endpoint, schedNo)
+    if (debugLevel > "0") {
+		log.debug "+++++ getSchedule()  endpoint=${endpoint} schedNo=${schedNo} cnfNo=${cnfNo}"
+    }
+    if (cnfNo) {
+	    cmds.addAll(getConfiguration(getSCHED_PARAM(endpoint,schedNo)))
+    }
+    delayBetweenLog(cmds)
+}
+
+// Set all four VSP RPM Speeds and the maximum RPM speed
+List setVSPSpeeds(Integer rpm1, Integer rpm2, Integer rpm3, Integer rpm4, Integer rpmMax) {
+    if (debugLevel > "0") {
+		log.debug "+++++ setVSPSpeeds()  rpm1=${rpm1} rpm2=${rpm2} rpm3=${rpm3} rpm4=${rpm4} rpmMax=${rpmMax}  "
+    }
+	def cmds = []
+    [rpm1,rpm2,rpm3,rpm4,rpmMax].eachWithIndex{ spd, inx ->
+//    	log.debug "loop spd=$spd  inx=$inx"
+    	if (inx < 4) {
+	    	cmds.addAll(setConfiguration(getVSP_RPM_SCHED_PARAM(inx+1), 2, spd.intdiv(256), (spd % 256), 0, 0))
+        } else {
+    		cmds.addAll(setConfiguration(getVSP_RPMMAX_SCHED_PARAM(), 2, spd.intdiv(256), (spd % 256), 0, 0))
+        }
+	}    
+	delayBetweenLog(cmds)
 }
 
 // Not currently used
@@ -1477,7 +1700,18 @@ private List getTestCmds() {
 //		zwave.manufacturerProprietaryV1.manufacturerProprietary(payload: "05400101830101")
 	]
 //    cmds.addAll(setChanState(getVSP_CHAN_NO(2), 0))
-    cmds.addAll(getChanState(getVSP_CHAN_NO(1)))
+//    cmds.addAll(getChanState(getVSP_CHAN_NO(1)))
+//	cmds.addAll(setVSPSpeeds(1500,2100,2800,3400,3425) )
+//	cmds.addAll(setVSPSpeeds(1400,2000,2750,3450,3450) )
+//	cmds.addAll(setSchedule(1,1,0,0,23,59) )
+//	cmds.addAll(resetSchedule(1,3) )
+//	cmds.addAll(setSchedule(2,1,07,00,19,00) )
+//	cmds.addAll(setSchedule(7,1,07,00,18,00) )
+//	cmds.addAll(resetSchedule(8,3) )
+	cmds.addAll(getSchedule(1,1) )
+//	state.each {key, val ->
+//        log.debug "state key: $key, value: $val"
+//    }
 	cmds
 }
 
@@ -1626,7 +1860,8 @@ def List togglePoolSpaMode()   {delayBetweenLog(addRefreshCmds(togglePoolSpaMode
 
 def List quickSetSpa(degrees)  {delayBetweenLog(addRefreshCmds(setSpaSetpointInternal("${degrees}".toDouble())))}
 def List quickSetPool(degrees) {delayBetweenLog(addRefreshCmds(setPoolSetpointInternal("${degrees}".toDouble())))}
-def List quickGetWaterTemp()   {delayBetweenLog(addRefreshCmds(getTestCmds())) }
+def List quickGetWaterTemp()   {delayBetweenLog(addRefreshCmds(getWaterTemp())) }
+def List quickGetTestCmds()    {delayBetweenLog(addRefreshCmds(getTestCmds())) }
 
 
 // Called from Parse for responses from the device
