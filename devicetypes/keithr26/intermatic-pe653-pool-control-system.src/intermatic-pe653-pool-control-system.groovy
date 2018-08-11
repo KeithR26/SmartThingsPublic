@@ -19,6 +19,10 @@
  *
  *  Don't use SamrtThings Multi-channel (deprecated) or Cooper Lee's code (vTile_ms, ms_w_vts). These are incompatible
  *  with the Composite DTH architecture.
+ * 
+ *  To convert to Hubitat:
+ *  1. Replace All: "physicalgraph.zwave." with "hubitat.zwave."
+ *  2. around line 1330, Comment out ST lines, comment in HE lines
  *
  *	Version History
  *	Ver		Date		Author		Changes
@@ -1246,7 +1250,7 @@ def List updated() {
 
 	def cmds = internalConfigure()
 //	cmds.addAll(setSchedule(9,1,12,0,12,02) )
-	cmds.addAll(getSchedule(7,1) )
+//	cmds.addAll(getSchedule(7,1) )
 	cmds = delayBetweenLog(addRefreshCmds(cmds))
 //	log.warn "cmds=$cmds"
     cmds.each {key ->
