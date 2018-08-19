@@ -21,7 +21,7 @@
  *  with the Composite DTH architecture.
  * 
  *  To convert to Hubitat:
- *  1. Replace All: "hubitat." with "hubitat."
+ *  1. Replace All: "physicalgraph." with "hubitat."
  *  2. around line 1330, Comment out ST lines, comment in HE lines
  *
  *	Version History
