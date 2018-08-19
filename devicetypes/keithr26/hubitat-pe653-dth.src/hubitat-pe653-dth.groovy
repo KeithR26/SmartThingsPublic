@@ -19,9 +19,9 @@
  *
  *  Don't use SamrtThings Multi-channel (deprecated) or Cooper Lee's code (vTile_ms, ms_w_vts). These are incompatible
  *  with the Composite DTH architecture.
- *
+ * 
  *  To convert to Hubitat:
- *  1. Replace All: "physicalgraph.zwave." with "hubitat.zwave."
+ *  1. Replace All: "hubitat." with "hubitat."
  *  2. around line 1330, Comment out ST lines, comment in HE lines
  *
  *	Version History
@@ -51,13 +51,16 @@
  *	3.01	07/06/2018	KeithR26	Added second Air Temperature. Now displays both Freeze and Solar temps.
  *	3.02	07/07/2018	KeithR26	Avoid sending events and warnings if no VSP
  *	3.03	07/15/2018	KeithR26	More minor adjustments to improve Hubitat compatibility
- *	3.04	07/15/2018	KeithR26	Added setSchedule, resetSchedule, getSchedule, and setVSPSpeeds commands
+ *	3.04	07/15/2018	KeithR26	Added setSchedule, resetSchedule, getSchedules, and setVSPSpeeds commands
  *									Added Schedule events
  *			07/22/2018	KeithR26	Due to different Intermatic firmware sub-versions of v3.4, alternate Setpoint "scale" if SetPointSet is ignored ("learn")
  *									Fix negative air and solar temperature display
- *			08/09/2018	KeithR26	Fixes to getSchedule.
+ *			08/09/2018	KeithR26	Fixes to getSchedules.
  *									Fix QuickGetWaterTemp
  *									Fix update of "Set Mode" labels on the UI
+ *	3.05	08/19/2018	KeithR26	Finish off Schedule functions
+ *									POssible fix to set Clock
+ *									Fix Light Color slider
 */
 metadata {
 	definition (name: "Intermatic PE653 Pool Control System", author: "KeithR26", namespace:  "KeithR26") {
@@ -132,7 +135,7 @@ metadata {
         command "setLightColor", ["number"]
         command "setColor"
         command "setClock"
-        command "getSchedule", ["number","number"]
+        command "getSchedules", ["number"]
         command "setSchedule", ["number","number","number","number","number","number"]
         command "resetSchedule", ["number","number"]
         command "setVSPSpeeds"
@@ -565,11 +568,12 @@ metadata {
 // Constants for PE653 configuration parameter locations
 def getDELAY () {ZWdelay}								// How long to delay between commands to device (configured)
 def getMIN_DELAY () {"800"}								// Minimum delay between commands to device (configured)
-def getVERSION () {"Ver 3.04"}							// Keep track of handler version
+def getVERSION () {"Ver 3.05"}							// Keep track of handler version
 def getSWITCH_SCHED_PARAM (int sw, int sch) { (4 + (sw-1)*3 + (sch-1)) }	// Configuration schedule for switch 1-5
 def getVSP_RPM_SCHED_PARAM (int sp) { (32 + (sp-1))}	// Configuration schedule for VSP RPM Speeds 1-4
 def getVSP_RPMMAX_SCHED_PARAM () { (49) }				// VSP RPM Max speed Schedule 0x31
-def getPOOL_SPA_SCHED_PARAM (int sch) { 20 + (sch-1) }	// Pool/Spa mode Schedule 1-3 - 0x14
+def getPOOL_SPA_SCHED_PARAM (int sch) { 19 + (sch-1) }	// Pool/Spa mode Schedule 1-3 - 0x13
+def getPOOL_SPA_CONFIG () { 22 }						// Pool/Spa mode Mode - 0x16
 def getVSP_SCHED_PARAM (int sp, int sch) { (36 + (sp-1)*3 + (sch-1)) }		// VSP Speed 1-4 Schedule 1-3 - 0x24
 def getPOOL_SPA_CHAN () { 39 }							// Pool/Spa channel - 0x27
 def getPOOL_SPA_EP () { 6 }								// Pool/Spa endpoint - 6
@@ -876,6 +880,7 @@ def process84Event(byte [] payload) {
     rslt << createEvent(name: "airTempFreeze", value: temp, unit: "F", displayed: false)
 
 //	Update Solar Air Temperature
+//	payload[AIR_TEMP_SOLAR_84] = -125   // Test for negative
 	temp = payload[AIR_TEMP_SOLAR_84] >= 0 ? payload[AIR_TEMP_SOLAR_84] : payload[AIR_TEMP_SOLAR_84] + 255
     rslt << createEvent(name: "airTempSolar", value: temp, unit: "F", displayed: false)
 
@@ -934,9 +939,9 @@ def zwaveEvent(hubitat.zwave.commands.configurationv2.ConfigurationReport cmd) {
 			map.name = "temperatureOffsets"
 			cmds << createEvent(map)
 			break;
-        case 19:
+        case POOL_SPA_CONFIG:
 			map.name = "spamode1"
-            log.debug "..... ConfigurationReport  - got parameter=${paramNum}"
+//            log.debug "..... ConfigurationReport  - got parameter=${paramNum}"
 //			cmds << createEvent(map)
 			break;
 		default:
@@ -946,25 +951,26 @@ def zwaveEvent(hubitat.zwave.commands.configurationv2.ConfigurationReport cmd) {
 
 	// If this configuration report corresponds to one of the schedules, record the current setting and create events
     if (ep) {
-        def lst = [ep, sch]
+        def lst
         def schLst
-//        def schLst2
-//        def schLst3
-        for (def i=0;i<cmd.size;i++) {
-            lst << cmd.configurationValue[i]
+		if (cmd.size == 4 && cmd.configurationValue[0] == 0xFF && cmd.configurationValue[1] == 0xFF && cmd.configurationValue[2] == 0xFF && cmd.configurationValue[3] == 0xFF) {
+//        	log.debug "schedule $ep,$sch is null"
+            lst = null
+        } else {
+	        lst = [ep, sch]
+            for (def i=0;i<=2;i+=2) {
+                int tim = cmd.configurationValue[i+1] * 256 + cmd.configurationValue[i]           
+                lst << tim.intdiv(60)
+                lst << tim % 60
+            }
         }
-
         if (state.schedules == null) {state.schedules = []}
-//        schLst3 = state.schedules
-//        schLst2 = schLst3[ep]
         schLst = state.schedules[ep]
-//        schLst = schLst2
-//        if (state.schedules[ep] == null) {state.schedules[ep]=[]}
-        if (schLst == null) {schLst =[];state.schedules[ep]=schLst }
-        if (debugLevel > "0") {
-			log.debug "ConfigurationReport for Schedule: ep:${ep} sch=${sch} lst=${lst} schLst.old=${schLst} schLst2=$schLst2 schLst3=$schLst3"
-        }
+        if (schLst == null) {schLst =[ep];state.schedules[ep]=schLst }
         schLst[sch] = lst
+        if (debugLevel > "0") {
+			log.debug "ConfigurationReport for Schedule: ep:${ep} sch=${sch} lst=${lst} schLst=${schLst}"
+        }
 //      log.debug "schLst=$schLst  state.schedules=${state.schedules}"
 //		log.debug "state = ${state}"
 
@@ -1123,7 +1129,7 @@ def zwaveEventMultiCmdEncap(cmd) {
 private List createMultipleEvents (Integer endpoint, Integer externalParm, String myParm) {
 	def rslt = []
     def swName  = getSWITCH_NAME(endpoint)
-	if (debugLevel > "1") {
+	if (debugLevel > "5") {
         log.debug "..... createMultipleEvents( endpoint:$endpoint, name:$swName, externalParm:$externalParm, myParm:$myParm)"
     }
 
@@ -1138,11 +1144,11 @@ private List createMultipleEvents (Integer endpoint, Integer externalParm, Strin
 //	log.debug("CME: devObj = ${devObj}")
 	if (devObj) {
     	if (devObj.currentValue("switch") == "$myParm") {
-	    	if (debugLevel > "1") {
+	    	if (debugLevel > "5") {
 	         	log.debug "<<<<< Child Event unnecessary. name:$dni:$swName evt: \"${myParm}\" ==> dev (${devObj.currentValue("switch")})"
             }
         } else {
-		    if (debugLevel > "1") {
+		    if (debugLevel > "5") {
 	        	log.debug "<<<<< Child Event NECESSARY: name:$dni:$swName evt: \"${myParm}\" ==> dev (${devObj.currentValue("switch")})"
             }
 			devObj.sendEvent(name: "switch", value: "$myParm", isStateChange: true, displayed: true, descriptionText: "$myParm event sent from parent device")
@@ -1203,9 +1209,9 @@ def List refresh() {
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 1)
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 2)
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 3)
-    cmds << zwave.configurationV2.configurationGet(parameterNumber: 19)
+    cmds << zwave.configurationV2.configurationGet(parameterNumber: POOL_SPA_CONFIG)
 
-    if (debugLevel > "1") {
+    if (debugLevel > "5") {
 	    getSupportedCmdClasses().each {cc ->
 			cmds << zwave.versionV1.versionCommandClassGet(requestedCommandClass: cc)
         }
@@ -1250,7 +1256,7 @@ def List updated() {
 
 	def cmds = internalConfigure()
 //	cmds.addAll(setSchedule(9,1,12,0,12,02) )
-//	cmds.addAll(getSchedule(7,1) )
+//	cmds.addAll(getSchedules(7) )
 	cmds = delayBetweenLog(addRefreshCmds(cmds))
 //	log.warn "cmds=$cmds"
     cmds.each {key ->
@@ -1278,13 +1284,13 @@ private List internalConfigure() {
 
     cmds << zwave.configurationV2.configurationSet(parameterNumber: 1,  size: 2, configurationValue: [operationMode1.toInteger(), opMode2.toInteger()])
     cmds << zwave.configurationV2.configurationSet(parameterNumber: 3,  size: 4, configurationValue: [tempWater, tempAir, 0, 0])
-    cmds << zwave.configurationV2.configurationSet(parameterNumber: 19, size: 1, configurationValue: [poolSpa1.toInteger()])
     cmds << zwave.configurationV2.configurationSet(parameterNumber: 2,  size: 1, configurationValue: [fireman.toInteger()])
+    cmds << zwave.configurationV2.configurationSet(parameterNumber: POOL_SPA_CONFIG, size: 1, configurationValue: [poolSpa1.toInteger()])
 
 	cmds << zwave.configurationV2.configurationGet(parameterNumber: 1)
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 2)
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 3)
-    cmds << zwave.configurationV2.configurationGet(parameterNumber: 19)
+    cmds << zwave.configurationV2.configurationGet(parameterNumber: POOL_SPA_CONFIG)
 
 //    cmds << zwave.associationV2.associationGroupingsGet()
 //    cmds << zwave.associationV2.associationSet(groupingIdentifier:1, nodeId:zwaveHubNodeId)
@@ -1376,8 +1382,8 @@ def List setClock() {
 	def time2 = "${String.format("%02d",nowCal.get(Calendar.HOUR_OF_DAY))}:${String.format("%02d",nowCal.get(Calendar.MINUTE))}"
 //	log.debug "Time:${time2}"
 	cmds << zwave.clockV1.clockSet(hour: "${nowCal.get(Calendar.HOUR_OF_DAY)}".toInteger(), minute: "${nowCal.get(Calendar.MINUTE)}".toInteger())
-	cmds << createEvent(name: "clock", value: "${time2}", displayed: false, descriptionText: "PE653 Clock: ${time2}")
-	delayBetweenLog(cmds)
+//	cmds << createEvent(name: "clock", value: "${time2}", displayed: false, descriptionText: "PE653 Clock: ${time2}")
+	delayBetweenLog(addRefreshCmds(cmds))
 }
 
 // Query the four VSP scheduled to determine which speed is enabled. Not currently used
@@ -1481,15 +1487,17 @@ List resetSchedule(Integer endpoint, Integer schedNo) {
 	delayBetweenLog(cmds)
 }
 
-// Request a one schedule based on the schedule number
-List getSchedule(Integer endpoint, Integer schedNo) {
+// Request all schedules for an endpoint
+List getSchedules(Integer endpoint) {
 	def cmds = []
-    def cnfNo = getSCHED_PARAM(endpoint, schedNo)
+    def cnfNo = getSCHED_PARAM(endpoint, 1)
     if (debugLevel > "0") {
-		log.debug "+++++ getSchedule()  endpoint=${endpoint} schedNo=${schedNo} cnfNo=${cnfNo}"
+		log.debug "+++++ getSchedules()  endpoint=${endpoint} cnfNo=${cnfNo}"
     }
     if (cnfNo) {
-	    cmds.addAll(getConfiguration(getSCHED_PARAM(endpoint,schedNo)))
+	    cmds.addAll(getConfiguration(getSCHED_PARAM(endpoint,1)))
+	    cmds.addAll(getConfiguration(getSCHED_PARAM(endpoint,2)))
+	    cmds.addAll(getConfiguration(getSCHED_PARAM(endpoint,3)))
     }
     delayBetweenLog(cmds)
 }
@@ -1577,23 +1585,23 @@ private List setSched(int paramNum, Integer val) {
 	cmds
 }
 
-def setLightColor(int col) {
+private List setLightColorInternal(int col) {
     if (debugLevel > "0") {
 		log.debug "+++++ setColor ${col}"
     }
 	def cmds = []
-	cmds = createEvent(name: "lightColor", value: "${col}", isStateChange: true, displayed: true, descriptionText: "Color set to ${col}")
-	delayBetweenLog(cmds)
+    sendEvent(name: "lightColor", value: "${col}", isStateChange: true, displayed: true, descriptionText: "Color set to ${col}")
+	getColorChgCmds()
 }
 
-def setColor() {
+private List getColorChgCmds() {
 	def cmds = []
 	int blinkCnt = device.currentValue("lightColor").toInteger()
 	if (blinkCnt > 14) blinkCnt = 14;
     if (state.lightCircuitsList) {
 		cmds.addAll(blink(state.lightCircuitsList, blinkCnt))
     }
-	delayBetweenLog(cmds)
+    cmds
 }
 
 // Return a list of the Light Circuits selected to have color set
@@ -1690,9 +1698,9 @@ def setMode(int mode) {
 private List getRefreshCmds() {
 //	log.debug "+++++ getRefreshCmds"
 	def cmds =[
-		new physicalgraph.device.HubAction("910005400102870301"),
-		new physicalgraph.device.HubAction("910005400101830101"),
-//		new physicalgraph.device.HubAction("91000541010100"),
+		new hubitat.device.HubAction("910005400102870301"),
+		new hubitat.device.HubAction("910005400101830101"),
+//		new hubitat.device.HubAction("91000541010100"),
 	]
 	cmds
 }
@@ -1700,7 +1708,7 @@ private List getRefreshCmds() {
 private List getTestCmds() {
 	log.debug "+++++ getTestCmds"
 	def cmds =[
-//		new physicalgraph.device.HubAction("91000541010100"),
+//		new hubitat.device.HubAction("91000541010100"),
 //		zwave.manufacturerProprietaryV1.manufacturerProprietary(payload: "05400101830101")
 	]
 //    cmds.addAll(setChanState(getVSP_CHAN_NO(2), 0))
@@ -1712,7 +1720,7 @@ private List getTestCmds() {
 //	cmds.addAll(setSchedule(2,1,07,00,19,00) )
 //	cmds.addAll(setSchedule(7,1,07,00,18,00) )
 //	cmds.addAll(resetSchedule(8,3) )
-	cmds.addAll(getSchedule(1,1) )
+	cmds.addAll(getSchedules(1) )
 //	state.each {key, val ->
 //        log.debug "state key: $key, value: $val"
 //    }
@@ -1747,7 +1755,7 @@ private List getChanState(ch) {
 
 // Set switch instance on/off
 private List setChanState(ch, on) {
-	if (debugLevel > "1") {
+	if (debugLevel > "5") {
 		log.debug "+++++ setChanState($ch, $on)"
     }
 	def cmds =[
@@ -1866,7 +1874,8 @@ def List quickSetSpa(degrees)  {delayBetweenLog(addRefreshCmds(setSpaSetpointInt
 def List quickSetPool(degrees) {delayBetweenLog(addRefreshCmds(setPoolSetpointInternal("${degrees}".toDouble())))}
 def List quickGetWaterTemp()   {delayBetweenLog(addRefreshCmds(getWaterTemp())) }
 def List quickGetTestCmds()    {delayBetweenLog(addRefreshCmds(getTestCmds())) }
-
+def List setLightColor(int col){delayBetweenLog(addRefreshCmds(setLightColorInternal(col))) }
+def List setColor()				{addRefreshCmds(delayBetweenLog(cmds)) }
 
 // Called from Parse for responses from the device
 def delayResponseLog(parm, dly=DELAY, responseFlg=true) {
@@ -1891,11 +1900,11 @@ def delayBetweenLog(parm, dly=DELAY, responseFlg=false) {
         } else if (l in List) {
 			log.warn "UNEXPECTED in LIST: l -> ${l}"
         } else {
-  			if (debugLevel > "1") {
+  			if (debugLevel > "5") {
         		log.trace "l -> ${l}"
             }
         }
-		if (l instanceof physicalgraph.device.HubAction) {
+		if (l instanceof hubitat.device.HubAction) {
             if (cmds) {
 				def c = cmds.last()			//check if there is already a delay prior to this
 	            if (!(c instanceof String || c instanceof GString) || c.take(6) != "delay ") {
@@ -1905,7 +1914,7 @@ def delayBetweenLog(parm, dly=DELAY, responseFlg=false) {
             }
             cmds << l
             devStr = devStr.concat("\n<<<<< HubAction: $l")
-//        	log.trace "instanceof physicalgraph.device.HubAction"
+//        	log.trace "instanceof hubitat.device.HubAction"
         } else if (l instanceof String || l instanceof GString) {
         	if (l.take(5) == "Note:") {
                 evtStr = evtStr.concat("\n<<<<< ${l.drop(5)}")
@@ -1920,11 +1929,11 @@ def delayBetweenLog(parm, dly=DELAY, responseFlg=false) {
         } else if (l instanceof Map) {
 // example:	createEvent(name: "$sw", value: "$myParm", isStateChange: true, displayed: true, descriptionText: "($sw set to $myParm)")
 			if (device.currentValue(l.name) == l.value) {
-			    if (debugLevel > "1") {
+			    if (debugLevel > "5") {
 	            	log.debug "<<<<< Event unnecessary. name:${l.name}  evt: \"${l.value}\" ==> dev:(${device.currentValue(l.name)})"
                 }
             } else {
-			    if (debugLevel > "1") {
+			    if (debugLevel > "5") {
 	            	log.debug "<<<<< Event NECESSARY. name:${l.name} evt: \"${l.value}\" ==> dev:(${device.currentValue(l.name)})"
                 }
                 evts << l
@@ -1956,7 +1965,7 @@ def delayBetweenLog(parm, dly=DELAY, responseFlg=false) {
         }
 		evts
     } else {
-        if (debugLevel > "1") {
+        if (debugLevel > "5") {
             log.debug "<<<<< rspFlg=${responseFlg} dly:$dly/${DELAY} No Commands or Events"
         }
     	null
