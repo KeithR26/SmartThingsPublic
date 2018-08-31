@@ -61,9 +61,13 @@
  *	3.05	08/19/2018	KeithR26	Finish off Schedule functions
  *									POssible fix to set Clock
  *									Fix Light Color slider
+ *	3.06	08/30/2018	KeithR26	Make temperature events visible
+ *									Suppress redundant events
 */
+def getVERSION () {"Ver 3.06"}		// Keep track of handler version
+
 metadata {
-	definition (name: "Intermatic PE653 Pool Control System", author: "KeithR26", namespace:  "KeithR26") {
+	definition (name: "Intermatic Pool Control System", author: "KeithR26", namespace:  "KeithR26") {
         capability "Actuator"
 		capability "Switch"
 		capability "Polling"
@@ -568,7 +572,6 @@ metadata {
 // Constants for PE653 configuration parameter locations
 def getDELAY () {ZWdelay}								// How long to delay between commands to device (configured)
 def getMIN_DELAY () {"800"}								// Minimum delay between commands to device (configured)
-def getVERSION () {"Ver 3.05"}							// Keep track of handler version
 def getSWITCH_SCHED_PARAM (int sw, int sch) { (4 + (sw-1)*3 + (sch-1)) }	// Configuration schedule for switch 1-5
 def getVSP_RPM_SCHED_PARAM (int sp) { (32 + (sp-1))}	// Configuration schedule for VSP RPM Speeds 1-4
 def getVSP_RPMMAX_SCHED_PARAM () { (49) }				// VSP RPM Max speed Schedule 0x31
@@ -872,17 +875,17 @@ def process84Event(byte [] payload) {
 
 //	Update Water Temperature
 	temp = payload[WATER_TEMP_84] >= 0 ? payload[WATER_TEMP_84] : payload[WATER_TEMP_84] + 255
-    rslt << createEvent(name: "temperature", value: temp, unit: "F", displayed: false)
+    rslt << createEvent(name: "temperature", value: temp, unit: "F", displayed: true, isStateChange: true)
 
 //	Update Freeze Air Temperature
 //	payload[AIR_TEMP_FREEZE_84] = -127  // test for negative
 	temp = payload[AIR_TEMP_FREEZE_84] >= 0 ? payload[AIR_TEMP_FREEZE_84] : payload[AIR_TEMP_FREEZE_84] + 255
-    rslt << createEvent(name: "airTempFreeze", value: temp, unit: "F", displayed: false)
+    rslt << createEvent(name: "airTempFreeze", value: temp, unit: "F", displayed: true, isStateChange: true)
 
 //	Update Solar Air Temperature
 //	payload[AIR_TEMP_SOLAR_84] = -125   // Test for negative
 	temp = payload[AIR_TEMP_SOLAR_84] >= 0 ? payload[AIR_TEMP_SOLAR_84] : payload[AIR_TEMP_SOLAR_84] + 255
-    rslt << createEvent(name: "airTempSolar", value: temp, unit: "F", displayed: false)
+    rslt << createEvent(name: "airTempSolar", value: temp, unit: "F", displayed: true, isStateChange: true)
 
 //	Update Clock
     def time1 = "${String.format("%02d",payload[CLOCK_HOUR_84])}:${String.format("%02d",payload[CLOCK_MINUTE_84])}"
@@ -984,6 +987,9 @@ def zwaveEvent(hubitat.zwave.commands.sensormultilevelv1.SensorMultilevelReport 
     def map = [:]
     map.value = cmd.scaledSensorValue.toString()
     map.unit = cmd.scale == 1 ? "F" : "C"
+    map.displayed = true
+    map.isStateChange = true
+    map.descriptionText = "Water Temp is ${map.value}°${map.unit}"
     map.name = "temperature"
     createEvent(map)
 }
@@ -1078,13 +1084,13 @@ def zwaveEvent(hubitat.zwave.commands.multiinstancev1.MultiInstanceCmdEncap cmd)
 	log.debug "multiinstancev1.MultiInstanceCmdEncap cmd=${cmd}"
 	zwaveEventMultiCmdEncap(cmd)
 }
-
+/*
 // Multi-channel event from the device. Version 3 of Command Class
 def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiInstanceCmdEncap cmd) {
 	log.warn "multichannelv3.MultiInstanceCmdEncap cmd=${cmd}"
 	zwaveEventMultiCmdEncap(cmd)
 }
-
+*/
 // Multi-channel event from the device, common method.
 def zwaveEventMultiCmdEncap(cmd) {
 	log.debug "zwaveEventCmdEncap cmd=${cmd}"
@@ -1928,7 +1934,7 @@ def delayBetweenLog(parm, dly=DELAY, responseFlg=false) {
 //            log.trace "#### LIST: $l"
         } else if (l instanceof Map) {
 // example:	createEvent(name: "$sw", value: "$myParm", isStateChange: true, displayed: true, descriptionText: "($sw set to $myParm)")
-			if (device.currentValue(l.name) == l.value) {
+			if ("${device.currentValue(l.name)}".equals("${l.value}")) {
 			    if (debugLevel > "5") {
 	            	log.debug "<<<<< Event unnecessary. name:${l.name}  evt: \"${l.value}\" ==> dev:(${device.currentValue(l.name)})"
                 }
