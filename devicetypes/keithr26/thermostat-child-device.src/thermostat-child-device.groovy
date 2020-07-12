@@ -14,6 +14,7 @@
 metadata {
 	definition (name: "Thermostat Child Device", namespace: "KeithR26", author: "Keith Riley", vid: "generic-thermostat") {
 		capability "Thermostat"
+        capability "Refresh"
 
 	
 /*	attribute	"coolingSetpoint", "number"
@@ -31,43 +32,69 @@ metadata {
 	attribute	"heatingSetpointRange", "string"
 	attribute	"thermostatSetpointRange", "string"
 
-	command		"updated"	
-	
+	command		"updated"
+    command		"setpointUp"
+    command		"setpointDown"
 	}
 
 	tiles {
-       multiAttributeTile(name:"thermostatMulti", type:"thermostat", width:6, height:4) {
-            tileAttribute("device.temperature", key: "PRIMARY_CONTROL") {
-                attributeState("temp", label:'${currentValue}°', unit:"°F", defaultState: true)
+        multiAttributeTile(name:"setpointTile", type:"thermostat", width:6, height:4) {
+            tileAttribute("device.heatingSetpoint", key: "PRIMARY_CONTROL") {
+                attributeState("temp", label:'${currentValue}°', unit:"°F", defaultState: true,	backgroundColors:[
+                    [value: 32, color: "#153591"],
+                    [value: 54, color: "#1e9cbb"],
+                    [value: 64, color: "#90d2a7"],
+                    [value: 74, color: "#44b621"],
+                    [value: 90, color: "#f1d801"],
+                    [value: 98, color: "#d04e00"],
+                    [value: 110, color: "#bc2323"]
+                ])
             }
-            tileAttribute("device.temperature", key: "VALUE_CONTROL") {
-                attributeState("VALUE_UP", action: "setpointUp")
-                attributeState("VALUE_DOWN", action: "setpointDown")
-            }
-            tileAttribute("device.humidity", key: "SECONDARY_CONTROL") {
-                attributeState("humidity", label: '${currentValue}%', unit: "%", defaultState: true)
+            tileAttribute("device.heatingSetpoint", key: "VALUE_CONTROL") {
+                attributeState "VALUE_UP", action: "setpointUp"
+                attributeState "VALUE_DOWN", action: "setpointDown"
             }
             tileAttribute("device.thermostatOperatingState", key: "OPERATING_STATE") {
                 attributeState("idle", backgroundColor: "#FFFFFF")
                 attributeState("heating", backgroundColor: "#E86D13")
-                attributeState("cooling", backgroundColor: "#00A0DC")
+            }
+//            tileAttribute("device.thermostatMode", key: "THERMOSTAT_MODE") {
+//                attributeState("off",  label: '${name}')
+//                attributeState("heat", label: '${name}')
+//            }
+            tileAttribute("device.thermostatOperatingState", key: "SECONDARY_CONTROL") {
+     	        attributeState("idle", label:'State: ${currentValue} not heating")}', defaultState: true)
+     	        attributeState("heating", label:'State: ${currentValue} at xx', defaultState: true)
+		    }
+		}
+        multiAttributeTile(name:"valueTile", type:"thermostat", width:6, height:4) {
+            tileAttribute("device.temperature", key: "PRIMARY_CONTROL") {
+                attributeState("temp", label:'${currentValue}°', unit:"°F", defaultState: true,	backgroundColors:[
+                    [value: 32, color: "#153591"],
+                    [value: 54, color: "#1e9cbb"],
+                    [value: 64, color: "#90d2a7"],
+                    [value: 74, color: "#44b621"],
+                    [value: 90, color: "#f1d801"],
+                    [value: 98, color: "#d04e00"],
+                    [value: 110, color: "#bc2323"]
+                ])
             }
             tileAttribute("device.thermostatMode", key: "THERMOSTAT_MODE") {
                 attributeState("off",  label: '${name}')
                 attributeState("heat", label: '${name}')
-                attributeState("cool", label: '${name}')
-                attributeState("auto", label: '${name}')
-                attributeState("emergency heat", label: 'e-heat')
             }
-            tileAttribute("device.heatingSetpoint", key: "HEATING_SETPOINT") {
-                attributeState("default", label: '${currentValue}', unit: "°F", defaultState: true)
-            }
-            tileAttribute("device.coolingSetpoint", key: "COOLING_SETPOINT") {
-                attributeState("default", label: '${currentValue}', unit: "°F", defaultState: true)
-            }
-        }
+            tileAttribute("device.temperature", key: "SECONDARY_CONTROL") {
+     	        attributeState("idle", label:'Current Temperature: ${currentValue}', defaultState: true)
+     	        attributeState("heating", label:'State: ${currentValue} at xx', defaultState: true)
+		    }
+		}
+		standardTile("refresh", "device.switch", width: 1, height: 1, inactiveLabel: false, decoration: "flat") {
+			state "default", label:'', action:"refresh.refresh", icon:"st.secondary.refresh"
+		}
 	}
 }
+
+def DEFAULT_HEATING_SETPOINT = 40
 
 void updated() {
 	log.debug "updated() called in Thermostat Child device"
@@ -92,6 +119,7 @@ void on() {
 }
 
 void refresh() {
+	log.debug "+++++ refresh()"
 	parent.childRefresh(device.deviceNetworkId)
 }
 
@@ -135,6 +163,22 @@ void setCoolingSetpoint(temperature) {
 void setHeatingSetpoint(temperature) {
 	log.debug "setHeatingSetpoint(${temperature}) called in Thermostat child"
 	parent.childSetHeatingSetpoint(device.deviceNetworkId, temperature)
+}
+
+private Integer getHeatingSetpoint() {
+    def hs = device.currentState("heatingSetpoint")
+    return hs ? hs.getIntegerValue() : DEFAULT_HEATING_SETPOINT
+}
+private setpointUp() {
+    log.trace "Executing 'heatUp'"
+    def newHsp = getHeatingSetpoint() + 1
+    setHeatingSetpoint(newHsp)
+}
+
+private setpointDown() {
+    log.trace "Executing 'heatDown'"
+    def newHsp = getHeatingSetpoint() - 1
+    setHeatingSetpoint(newHsp)
 }
 
 void setSchedule(jsonObject) {
