@@ -82,8 +82,9 @@
  *									Fixed command sending from updated()
  *									Add support for Intermatic firmware v3.1 (old - most users on v3.4)
  *  4.1.0   02/06/2021  KeithR26    Port to new App
+ *  4.1.1	02/07/2021  KeithR26	Add Preference to control Child Device Generation
 */
-def getVERSION () {"Ver 4.1.0"}		// Keep track of handler version
+def getVERSION () {"Ver 4.1.1"}		// Keep track of handler version
 
 metadata {
 	definition (name: "Intermatic Pool Control - New App - SmartThings", author: "KeithR26", namespace:  "futuredance12594", "vid": "907f4fda-eb90-36f0-8d79-c11be717560a", "mnmn": "SmartThingsCommunity"
@@ -212,7 +213,12 @@ metadata {
 					 [2:"Command formatting"],
 					 [3:"Event suppression"],
 					 [4:"Manufacturers msgs"],
-					 [5:"Child Devices"]], defaultvalue: 1
+					 [5:"Child Devices"]]
+		input "ChildOptions", "enum", title: "Child Device Generation:", defaultValue: 0,
+			options:[[0:"All"],
+			         [1:"Switches Only"],
+			         [2:"Thermostats Only"],
+			         [3:"None"]]
 		input "ZWdelay", "number",
 			title: "Delay between Z-Wave commands sent (milliseconds). Suggest 1000.", defaultValue: 1000, required: true
 		//Mode 1
@@ -1128,14 +1134,15 @@ def updated() {
 	log("DEBUG", "+++++ updated()    DTH:${VERSION}  Hub Ver:${location.hubs*.firmwareVersionString.findAll{it}} state.Versioninfo=${state.VersionInfo}  state.ManufacturerInfo=${state.ManufacturerInfo} child devices=$children")
 	initUILabels()
 	removeOldJunkStateVariables()
-	if (children) {
-		log("DEBUG", DBG_CHILD, "+++++ updated() child devices found = $children")
-        if (fireman == "15") {
-        	removeChildDevices( children )
-        }
-    } else {
-    	createChildDevices()
-    }
+//	if (children) {
+//		log("DEBUG", DBG_CHILD, "+++++ updated() child devices found = $children")
+//        if (fireman == "15") {
+//        	removeChildDevices( children )
+//        }
+//    } else {
+	// Always call create, but it will only add or remove those that need to change
+	createChildDevices()
+//    }
 
 	// Initialize persistent state variables
 	state.lightCircuitsList = getLightCircuits()
@@ -1194,7 +1201,12 @@ private List internalConfigure() {
 /*
  * Child device manipulation
  */
-
+/*  ChildOptions:
+     0:"All"
+	 1:"Switches Only"
+	 2:"Thermostats Only"
+	 3:"None"
+*/
 private void createChildDevices() {
 	def oldChildren = getChildDevices()
 	log("DEBUG", "----- createChildDevices() Existing children: ${oldChildren}")
@@ -1204,21 +1216,25 @@ private void createChildDevices() {
 	def CHILD_THERMOSTAT_NAMESPACE = "KeithR26"
 	def CHILD_THERMOSTAT_NAME = "Thermostat Child Device"
 
-	for (childNo in 1..5) {
-		addOrReuseChildDevice(childNo, "${device.displayName} - Switch ${childNo}", CHILD_SWITCH_NAMESPACE, CHILD_SWITCH_NAME, oldChildren, false)
-//		addOrReuseChildDevice(childNo+100, "${device.displayName} - Circuit ${childNo}", CHILD_SWITCH_NAMESPACE, CHILD_SWITCH_NAME, oldChildren, true)
-	}
-	if ( POOL_SPA_COMBO ) {
-		def childNo = 6
-		addOrReuseChildDevice(childNo, "${device.displayName} - Spa Mode",  CHILD_SWITCH_NAMESPACE, CHILD_SWITCH_NAME, oldChildren, false)
-	}
-	if ( VSP_ENABLED ) {
-		for (childNo in 7..10) {
-			addOrReuseChildDevice(childNo, "${device.displayName} - Speed ${childNo-6}",  CHILD_SWITCH_NAMESPACE, CHILD_SWITCH_NAME, oldChildren, false)
+	// Only create the switch child devices if configured for All or Switches only
+	if (ChildOptions == "0" || ChildOptions == "1") {
+		for (childNo in 1..5) {
+			addOrReuseChildDevice(childNo, "${device.displayName} - Switch ${childNo}", CHILD_SWITCH_NAMESPACE, CHILD_SWITCH_NAME, oldChildren, false)
+//			addOrReuseChildDevice(childNo+100, "${device.displayName} - Circuit ${childNo}", CHILD_SWITCH_NAMESPACE, CHILD_SWITCH_NAME, oldChildren, true)
 		}
-	}
+        if ( POOL_SPA_COMBO ) {
+            def childNo = 6
+            addOrReuseChildDevice(childNo, "${device.displayName} - Spa Mode",  CHILD_SWITCH_NAMESPACE, CHILD_SWITCH_NAME, oldChildren, false)
+        }
+        if ( VSP_ENABLED ) {
+            for (childNo in 7..10) {
+                addOrReuseChildDevice(childNo, "${device.displayName} - Speed ${childNo-6}",  CHILD_SWITCH_NAMESPACE, CHILD_SWITCH_NAME, oldChildren, false)
+            }
+        }
+    }
 	def CHILD_THERMOSTAT_ENABLED = 1
-	if ( CHILD_THERMOSTAT_ENABLED ) {
+	// Only create the thermostat child devices if configured for All or Thermostats only
+	if ( CHILD_THERMOSTAT_ENABLED  && (ChildOptions == "0" || ChildOptions == "2")) {
 		addOrReuseChildDevice(11, "${device.displayName} - Pool Thermostat",  CHILD_THERMOSTAT_NAMESPACE, CHILD_THERMOSTAT_NAME, oldChildren, false)
 		addOrReuseChildDevice(12, "${device.displayName} - Spa Thermostat",  CHILD_THERMOSTAT_NAMESPACE, CHILD_THERMOSTAT_NAME, oldChildren, false)
 	}
